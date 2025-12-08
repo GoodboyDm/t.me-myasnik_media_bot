@@ -1,21 +1,17 @@
 import os
-from aiogram import Bot, Dispatcher, executor, types
+import asyncio
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message
+from aiogram.filters import CommandStart
 
-# Берём токен из переменной окружения
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("Нужно задать TELEGRAM_BOT_TOKEN в переменных окружения")
-
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher(bot)
-
-# Простейшее состояние: кто сейчас должен ввести инфоповод
+# Храним id пользователей, от которых ждём инфоповод
 waiting_infopovod = set()
 
+dp = Dispatcher()
 
-@dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message):
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
     user_id = message.from_user.id
     waiting_infopovod.add(user_id)
 
@@ -28,13 +24,12 @@ async def cmd_start(message: types.Message):
     await message.answer(text)
 
 
-@dp.message_handler()
-async def handle_any_message(message: types.Message):
+@dp.message()
+async def handle_any_message(message: Message):
     user_id = message.from_user.id
 
     # Обрабатываем только тех, кто после /start
     if user_id not in waiting_infopovod:
-        # На этом шаге игнорируем всё лишнее
         return
 
     raw = (message.text or "").strip()
@@ -51,12 +46,18 @@ async def handle_any_message(message: types.Message):
             "На следующем шаге сюда прикрутим тему, ссылку и фото."
         )
 
-    # На этом шаге просто показываем, как мы его поняли
     await message.answer(resp)
-
-    # Снимаем пользователя с ожидания инфоповода
     waiting_infopovod.discard(user_id)
 
 
+async def main():
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("Нужно задать TELEGRAM_BOT_TOKEN в переменных окружения")
+
+    bot = Bot(token=token)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
+
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
