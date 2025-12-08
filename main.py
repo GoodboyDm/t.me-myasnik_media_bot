@@ -1,18 +1,36 @@
 import os
 import asyncio
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 
-# Храним id пользователей, от которых ждём инфоповод
+# Состояния по-простому: три множества юзеров
 waiting_infopovod = set()
+waiting_topic_choice = set()
+waiting_topic_custom = set()
 
 dp = Dispatcher()
+
+
+def topic_keyboard() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("Путь мужчины и сила"))
+    kb.add(KeyboardButton("Семья и дети"))
+    kb.add(KeyboardButton("Активность и спорт"))
+    kb.add(KeyboardButton("Город, дорога и музыка"))
+    kb.add(KeyboardButton("Ввести свою тему"))
+    return kb
 
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
+
+    # Сбрасываем все старые состояния
+    waiting_infopovod.discard(user_id)
+    waiting_topic_choice.discard(user_id)
+    waiting_topic_custom.discard(user_id)
+
     waiting_infopovod.add(user_id)
 
     text = (
@@ -21,33 +39,89 @@ async def cmd_start(message: Message):
         "Что произошло? Где? С кем?\n"
         "Если инфоповода нет — напишите «нет»."
     )
-    await message.answer(text)
+    await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
 
 @dp.message()
 async def handle_any_message(message: Message):
     user_id = message.from_user.id
-
-    # Обрабатываем только тех, кто после /start
-    if user_id not in waiting_infopovod:
-        return
-
     raw = (message.text or "").strip()
     low = raw.lower()
 
-    if low == "нет" or raw == "":
-        infopovod = "нет"
-        resp = "Инфоповод: НЕТ.\nПозже здесь будем спрашивать тему и фото."
-    else:
-        infopovod = raw
-        resp = (
-            "Принял инфоповод.\n\n"
-            f"Текст инфоповода:\n«{infopovod}»\n\n"
-            "На следующем шаге сюда прикрутим тему, ссылку и фото."
-        )
+    # 1) Шаг инфоповода
+    if user_id in waiting_infopovod:
+        if low == "нет" or raw == "":
+            # Инфоповода нет -> переходим к выбору темы
+            waiting_infopovod.discard(user_id)
+            waiting_topic_choice.add(user_id)
 
-    await message.answer(resp)
-    waiting_infopovod.discard(user_id)
+            text = (
+                "Инфоповода нет.\n"
+                "Выберите тему поста или введите свою:"
+            )
+            await message.answer(text, reply_markup=topic_keyboard())
+        else:
+            # Инфоповод есть -> пока просто подтверждаем
+            waiting_infopovod.discard(user_id)
+
+            resp = (
+                "Принял инфоповод.\n\n"
+                f"Текст инфоповода:\n«{raw}»\n\n"
+                "На следующих шагах добавим ссылку, фото и генерацию поста."
+            )
+            await message.answer(resp, reply_markup=ReplyKeyboardRemove())
+
+        return
+
+    # 2) Шаг выбора темы из кнопок
+    if user_id in waiting_topic_choice:
+        if raw in [
+            "Путь мужчины и сила",
+            "Семья и дети",
+            "Активность и спорт",
+            "Город, дорога и музыка",
+        ]:
+            topic = raw
+            waiting_topic_choice.discard(user_id)
+
+            resp = (
+                f"Принял тему: «{topic}».\n\n"
+                "Дальше сюда добавим шаг с фото и генерацией поста."
+            )
+            await message.answer(resp, reply_markup=ReplyKeyboardRemove())
+            return
+
+        if low == "ввести свою тему":
+            waiting_topic_choice.discard(user_id)
+            waiting_topic_custom.add(user_id)
+
+            await message.answer(
+                "Введите тему поста одним сообщением.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+
+        # Если что-то странное — просим воспользоваться кнопками
+        await message.answer(
+            "Пожалуйста, выберите тему на клавиатуре или нажмите «Ввести свою тему».",
+            reply_markup=topic_keyboard(),
+        )
+        return
+
+    # 3) Шаг ручного ввода темы
+    if user_id in waiting_topic_custom:
+        topic = raw
+        waiting_topic_custom.discard(user_id)
+
+        resp = (
+            f"Принял тему: «{topic}».\n\n"
+            "Позже на этом месте будет генерация текста поста."
+        )
+        await message.answer(resp, reply_markup=ReplyKeyboardRemove())
+        return
+
+    # Если пользователь вне сценария — пока молчим
+    return
 
 
 async def main():
