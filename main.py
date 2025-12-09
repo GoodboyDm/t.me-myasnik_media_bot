@@ -14,12 +14,15 @@ from aiogram.types import (
 from aiogram.filters import CommandStart
 from openai import OpenAI
 
-# --- МОДЕЛЬ ---
+# ===================== НАСТРОЙКИ МОДЕЛИ =====================
 
+# Модель 5-й серии, качественная, через Responses API
 MODEL_NAME = "gpt-5.1"
 
+# Глобальный клиент OpenAI (ключ берём из окружения)
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --- ДОСТУП К БОТУ ---
+# ===================== ДОСТУП К БОТУ ========================
 
 ALLOWED_USERNAMES = {"dkokhel", "kochelme"}  # ты и сестра
 
@@ -29,7 +32,7 @@ def is_allowed(message: Message) -> bool:
     return username in ALLOWED_USERNAMES
 
 
-# --- ЗАГРУЗКА ПРОМПТА ИЗ ФАЙЛА ---
+# ===================== ПРОМПТ ИЗ ФАЙЛА ======================
 
 PROMPT_PATH = Path(__file__).parent / "myasnik_prompt.txt"
 try:
@@ -38,7 +41,7 @@ except FileNotFoundError:
     WRITER_SYSTEM_PROMPT = "ERROR: myasnik_prompt.txt not found"
 
 
-# --- ПРОСТЕЙШЕЕ СОСТОЯНИЕ НА МНОЖЕСТВАХ ---
+# ===================== FSM СОСТОЯНИЯ ========================
 
 waiting_infopovod = set()
 waiting_topic_choice = set()
@@ -46,20 +49,16 @@ waiting_topic_custom = set()
 waiting_release_type = set()
 waiting_photo_or_create = set()
 
-# Данные по пользователю (user_id -> ...)
+# Персональные данные по пользователю
 user_infopovod: dict[int, str | None] = {}
 user_topic: dict[int, str | None] = {}
 user_link: dict[int, str | None] = {}
 user_release_type: dict[int, str | None] = {}
-user_photo: dict[int, list[str]] = {}  # список file_id фотографий
+user_photo: dict[int, list[str]] = {}
 
 dp = Dispatcher()
 
-# Глобальный клиент OpenAI
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
-# --- КЛАВИАТУРЫ ---
+# ===================== КЛАВИАТУРЫ ===========================
 
 
 def infopovod_keyboard() -> ReplyKeyboardMarkup:
@@ -103,10 +102,11 @@ def create_post_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# ===================== ВСПОМОГАТЕЛЬНОЕ ======================
 
 
 def extract_link(text: str) -> str | None:
+    """Достаём первую ссылку из текста, если есть."""
     for part in text.split():
         if part.startswith("http://") or part.startswith("https://"):
             return part
@@ -114,18 +114,19 @@ def extract_link(text: str) -> str | None:
 
 
 async def go_to_photo_step(user_id: int, message: Message):
+    """Переход к шагу загрузки фото."""
     waiting_photo_or_create.add(user_id)
     user_photo[user_id] = []
 
     text = (
-        "Теперь можете отправить фото для поста.\n"
+        "Теперь можно отправить фото для поста.\n"
         "Можно прикрепить не более 3 фотографий.\n"
-        "Если фото не нужно — просто нажмите «Создать пост»."
+        "Если фото не нужно — нажмите «Создать пост»."
     )
     await message.answer(text, reply_markup=create_post_keyboard())
 
 
-# --- ЛОГИРОВАНИЕ В БД ---
+# ===================== ЛОГИРОВАНИЕ В БД =====================
 
 
 async def log_post_event(
@@ -180,7 +181,7 @@ async def log_post_event(
     await asyncio.to_thread(_insert)
 
 
-# --- ВЫЗОВ OpenAI ЧЕРЕЗ RESPONSES + gpt-5-mini ---
+# ===================== ВЫЗОВ МОДЕЛИ =========================
 
 
 async def generate_post_with_writer(
@@ -191,8 +192,9 @@ async def generate_post_with_writer(
     photos_count: int,
 ) -> str:
     """
-    Генерирует пост с помощью OpenAI Responses API (модель gpt-5-mini).
-    Поддерживает системный промпт и формат ответа text.
+    Генерирует пост через OpenAI Responses API (модель gpt-5.1).
+    Используем system+user в input и стараемся максимально надёжно
+    вытащить текст из ответа.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -221,10 +223,11 @@ async def generate_post_with_writer(
     try:
         loop = asyncio.get_running_loop()
 
+        # ВАЖНО: system-промпт передаём как отдельное сообщение
         response = await loop.run_in_executor(
             None,
             lambda: openai_client.responses.create(
-                model=MODEL_NAME,  # gpt-5-mini
+                model=MODEL_NAME,
                 input=[
                     {"role": "system", "content": WRITER_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -234,11 +237,40 @@ async def generate_post_with_writer(
             ),
         )
 
-        # Пробуем аккуратно вытащить текст
-        text = getattr(response, "output_text", "").strip()
+        # --- Пытаемся вытащить текст максимально надёжно ---
+
+        text = ""
+
+        # 1) output_text (если SDK это заполняет)
+        ot = getattr(response, "output_text", None)
+        if isinstance(ot, str):
+            text = ot.strip()
+        elif ot is not None:
+            t_candidate = getattr(ot, "text", None) or getattr(ot, "value", None)
+            if isinstance(t_candidate, str):
+                text = t_candidate.strip()
+
+        # 2) Разбор response.output[*].content[*]
+        if not text:
+            out_list = getattr(response, "output", None)
+            if out_list:
+                parts: list[str] = []
+                for out_item in out_list:
+                    content_list = getattr(out_item, "content", None)
+                    if not content_list:
+                        continue
+                    for c in content_list:
+                        t_candidate = getattr(c, "text", None) or getattr(
+                            c, "value", None
+                        )
+                        if isinstance(t_candidate, str):
+                            parts.append(t_candidate)
+                if parts:
+                    text = "\n".join(parts).strip()
 
         if not text:
-            print("DEBUG: empty output_text from responses.create:", response)
+            # В лог кидаем весь ответ, чтобы можно было посмотреть структуру
+            print("DEBUG: empty text from responses.create:", response)
             return (
                 "Не удалось сгенерировать пост: модель не вернула текст.\n"
                 "Попробуй ещё раз — я перепроверю формат."
@@ -246,21 +278,17 @@ async def generate_post_with_writer(
 
         return text
 
-      except Exception as e:
+    except Exception as e:
         err = str(e)
         print(f"[OpenAI error] {err}")
-
-        if "insufficient_quota" in err or "You exceeded your current quota" in err:
-            return (
-                "Ошибка при генерации поста: закончился лимит OpenAI.\n"
-                "Пополните баланс и повторите попытку."
-            )
-
         return (
-            "Не удалось сгенерировать пост из-за технической ошибки.\n"
-            "Попробуй ещё раз чуть позже."
+            "Не удалось сгенерировать пост: "
+            f"техническая ошибка OpenAI ({err}).\n"
+            "Попробуй ещё раз или пришли скрин ошибки."
         )
-# --- /start ---
+
+
+# ===================== ХЭНДЛЕР /start =======================
 
 
 @dp.message(CommandStart())
@@ -296,12 +324,12 @@ async def cmd_start(message: Message):
         "Привет! Давай сделаем новый пост для Константина.\n\n"
         "Введите инфоповод.\n"
         "Что произошло? Где? С кем?\n"
-        "Если инфоповода нет — нажмите кнопку «Без инфоповода»."
+        "Если инфоповода нет — нажми «Без инфоповода»."
     )
     await message.answer(text, reply_markup=infopovod_keyboard())
 
 
-# --- ОБРАБОТКА ФОТО ---
+# ===================== ХЭНДЛЕР ФОТО ========================
 
 
 @dp.message(F.photo)
@@ -348,7 +376,7 @@ async def handle_photo(message: Message):
         )
 
 
-# --- ОБЩИЙ ХЭНДЛЕР ТЕКСТА ---
+# ===================== ОБЩИЙ ХЭНДЛЕР ТЕКСТА =================
 
 
 @dp.message()
@@ -368,10 +396,7 @@ async def handle_any_message(message: Message):
             waiting_topic_choice.add(user_id)
             user_infopovod[user_id] = None
 
-            text = (
-                "Инфоповода нет.\n"
-                "Выберите тему поста или введите свою:"
-            )
+            text = "Инфоповода нет.\nВыберите тему поста или введите свою:"
             await message.answer(text, reply_markup=topic_keyboard())
             return
 
@@ -379,7 +404,8 @@ async def handle_any_message(message: Message):
         if link:
             # убираем ссылку из текста инфоповода
             parts = [
-                p for p in raw.split()
+                p
+                for p in raw.split()
                 if not (p.startswith("http://") or p.startswith("https://"))
             ]
             text_without_link = " ".join(parts).strip()
@@ -423,7 +449,7 @@ async def handle_any_message(message: Message):
             user_release_type[user_id] = "обычный релиз"
         else:
             await message.answer(
-                "Пожалуйста, выберите один из вариантов:",
+                "Пожалуйста, выбери один из вариантов:",
                 reply_markup=release_type_keyboard(),
             )
             return
@@ -467,7 +493,7 @@ async def handle_any_message(message: Message):
             return
 
         await message.answer(
-            "Пожалуйста, выберите тему на клавиатуре или нажмите «Ввести свою тему».",
+            "Пожалуйста, выбери тему на клавиатуре или «Ввести свою тему».",
             reply_markup=topic_keyboard(),
         )
         return
@@ -520,8 +546,10 @@ async def handle_any_message(message: Message):
                     raw_output=post_output,
                 )
             except Exception:
+                # Логирование не должно ломать поток
                 pass
 
+            # Чистим данные пользователя
             for d in (
                 user_infopovod,
                 user_topic,
@@ -540,14 +568,14 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # Если сообщение не попало ни в одно состояние
+    # Фоллбек, если человек пишет вне сценария
     await message.answer(
         "Чтобы начать, отправь команду /start.",
         reply_markup=ReplyKeyboardRemove(),
     )
 
 
-# --- ТОЧКА ВХОДА ---
+# ===================== ТОЧКА ВХОДА ==========================
 
 
 async def main():
