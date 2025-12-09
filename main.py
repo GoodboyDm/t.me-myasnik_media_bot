@@ -177,81 +177,89 @@ async def log_post_event(
 # --- ВЫЗОВ ПИСАТЕЛЯ ---
 
 
-async def generate_post_with_writer(params: dict) -> str:
+async def generate_post_with_writer(
+    infopovod: str | None,
+    topic: str | None,
+    link: str | None,
+    release_type: str | None,
+    photos_count: int,
+) -> str:
     """
-    Вызывает OpenAI с промптом автора Константина.
-    params – словарь с полями:
-      infopovod, topic, link, release_type, photos_count
+    Вызывает OpenAI (gpt-5-mini) с промптом автора Константина.
+    Вызов остаётся совместимым с тем местом, где функция уже используется.
     """
 
-    try:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return (
-                "Не удалось сгенерировать пост: не задан API-ключ OpenAI. "
-                "Проверь переменную окружения OPENAI_API_KEY в Railway."
-            )
-
-        client = OpenAI(api_key=api_key)
-
-        # Собираем пользовательский промпт (как и раньше)
-        infopovod = params.get("infopovod") or "нет"
-        topic = params.get("topic") or "нет"
-        link = params.get("link") or "нет"
-        release_type = params.get("release_type") or "нет"
-        photos_count = params.get("photos_count") or 0
-
-        # Короткое текстовое описание того, что бот получил
-        user_prompt = (
-            f"Инфоповод: {infopovod}\n"
-            f"Тема: {topic}\n"
-            f"Ссылка: {link}\n"
-            f"Тип релиза: {release_type}\n"
-            f"Фото: {photos_count}\n\n"
-            "Сгенерируй пост строго по правилам из инструкции."
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return (
+            "Не удалось сгенерировать пост: не задан API-ключ OpenAI.\n"
+            "Проверь переменную окружения OPENAI_API_KEY в Railway."
         )
 
-        # ВАЖНО: используем Responses API, а не chat.completions
+    client = OpenAI(api_key=api_key)
+
+    # Приводим входные параметры к строкам
+    infopovod_str = infopovod or "нет"
+    topic_str = topic or "нет"
+    link_str = link or "нет"
+    release_type_str = release_type or "нет"
+    photos_flag = "есть" if photos_count > 0 else "нет"
+
+    user_prompt = (
+        f"ИНФОПОВОД: {infopovod_str}\n"
+        f"ТЕМА: {topic_str}\n"
+        f"ССЫЛКА: {link_str}\n"
+        f"ТИП РЕЛИЗА: {release_type_str}\n"
+        f"ФОТО: {photos_flag} (количество: {photos_count})\n\n"
+        "Сгенерируй пост строго по инструкциям из SYSTEM-промпта.\n"
+        "Соблюдай формат OUTPUT FORMAT."
+    )
+
+    try:
         loop = asyncio.get_running_loop()
+
+        # Запрос к Responses API выполняем в отдельном потоке,
+        # чтобы не блокировать event loop aiogram
         response = await loop.run_in_executor(
             None,
             lambda: client.responses.create(
-                model=MODEL_NAME,              # "gpt-5-mini"
-                instructions=WRITER_SYSTEM_PROMPT,  # наш системный промпт из файла
-                input=user_prompt,             # текст с параметрами
+                model=MODEL_NAME,                # gpt-5-mini
+                instructions=WRITER_SYSTEM_PROMPT,
+                input=user_prompt,
                 temperature=0.6,
                 max_output_tokens=400,
             ),
         )
 
-        # Достаём текст из объекта Response
-        output_items = response.output
-        if not output_items:
-            return "Не удалось сгенерировать пост: модель вернула пустой ответ."
+        # Разбор ответа Responses API
+        if not response.output:
+            return "Не удалось сгенерировать пост: пустой ответ модели."
 
-        message_item = output_items[0]
-        content = message_item.content
-        if not content:
-            return "Не удалось сгенерировать пост: пустой контент в ответе модели."
+        msg = response.output[0]
+        if not msg.content:
+            return "Не удалось сгенерировать пост: нет контента в ответе модели."
 
-        text_part = content[0]
-        result_text = getattr(text_part, "text", None)
-        if not result_text:
-            return "Не удалось сгенерировать пост: не нашёл текст в ответе модели."
+        part = msg.content[0]
+        text_obj = getattr(part, "text", None)
+        if not text_obj:
+            return "Не удалось сгенерировать пост: не найден текст в ответе модели."
 
-        return result_text.strip()
+        return text_obj.strip()
 
     except Exception as e:
         err = str(e)
-        # Лог в Railway-логи, но не показываем пользователю внутренности
         print(f"[OpenAI error] {err}")
 
-        # Отдельно ловим историю с квотой
         if "insufficient_quota" in err or "You exceeded your current quota" in err:
             return (
-                "Ошибка при генерации поста: закончился лимит на стороне OpenAI. "
-                "Попробуй пополнить баланс в панели OpenAI и повторить запрос."
+                "Ошибка при генерации поста: закончился лимит OpenAI.\n"
+                "Попробуй пополнить баланс в кабинете OpenAI и повторить запрос."
             )
+
+        return (
+            "Не удалось сгенерировать пост из-за технической ошибки.\n"
+            "Попробуй ещё раз чуть позже."
+        )
 
 # ----- /start -----
 
