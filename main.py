@@ -186,7 +186,7 @@ async def generate_post_with_writer(
 ) -> str:
     """
     Вызывает OpenAI (gpt-5-mini) с промптом автора Константина.
-    Вызов остаётся совместимым с тем местом, где функция уже используется.
+    Сигнатура совместима с существующим кодом.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -198,7 +198,6 @@ async def generate_post_with_writer(
 
     client = OpenAI(api_key=api_key)
 
-    # Приводим входные параметры к строкам
     infopovod_str = infopovod or "нет"
     topic_str = topic or "нет"
     link_str = link or "нет"
@@ -218,20 +217,17 @@ async def generate_post_with_writer(
     try:
         loop = asyncio.get_running_loop()
 
-        # Запрос к Responses API выполняем в отдельном потоке,
-        # чтобы не блокировать event loop aiogram
+        # ВАЖНО: без temperature, только model + instructions + input
         response = await loop.run_in_executor(
             None,
             lambda: client.responses.create(
-                model=MODEL_NAME,                # gpt-5-mini
+                model=MODEL_NAME,                # "gpt-5-mini"
                 instructions=WRITER_SYSTEM_PROMPT,
                 input=user_prompt,
-                temperature=0.6,
                 max_output_tokens=400,
             ),
         )
 
-        # Разбор ответа Responses API
         if not response.output:
             return "Не удалось сгенерировать пост: пустой ответ модели."
 
@@ -244,7 +240,9 @@ async def generate_post_with_writer(
         if not text_obj:
             return "Не удалось сгенерировать пост: не найден текст в ответе модели."
 
-        return text_obj.strip()
+        # В SDK text_obj обычно объект с полем value
+        text_value = getattr(text_obj, "value", None) or str(text_obj)
+        return text_value.strip()
 
     except Exception as e:
         err = str(e)
@@ -260,7 +258,6 @@ async def generate_post_with_writer(
             "Не удалось сгенерировать пост из-за технической ошибки.\n"
             "Попробуй ещё раз чуть позже."
         )
-
 # ----- /start -----
 
 
