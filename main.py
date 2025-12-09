@@ -18,19 +18,26 @@ dp = Dispatcher()
 
 
 def infopovod_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("Без инфоповода"))
-    return kb
+    # aiogram 3: нужно явно задать keyboard=[ [...], [...] ]
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Без инфоповода")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def topic_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("Путь мужчины и сила"))
-    kb.add(KeyboardButton("Семья и дети"))
-    kb.add(KeyboardButton("Активность и спорт"))
-    kb.add(KeyboardButton("Город, дорога и музыка"))
-    kb.add(KeyboardButton("Ввести свою тему"))
-    return kb
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Путь мужчины и сила")],
+            [KeyboardButton(text="Семья и дети")],
+            [KeyboardButton(text="Активность и спорт")],
+            [KeyboardButton(text="Город, дорога и музыка")],
+            [KeyboardButton(text="Ввести свою тему")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 @dp.message(CommandStart())
@@ -102,7 +109,7 @@ async def handle_any_message(message: Message):
             await message.answer(resp, reply_markup=ReplyKeyboardRemove())
             return
 
-        if low == "ввести свою тему":
+        if raw == "Ввести свою тему" or low == "ввести свою тему":
             waiting_topic_choice.discard(user_id)
             waiting_topic_custom.add(user_id)
 
