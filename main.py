@@ -147,7 +147,7 @@ async def generate_post_with_writer(
     try:
         response = await asyncio.to_thread(
             client.chat.completions.create,
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             messages=[
                 {"role": "system", "content": WRITER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
