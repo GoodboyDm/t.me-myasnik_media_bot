@@ -123,7 +123,10 @@ async def generate_post_with_writer(
 ) -> str:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return "Ошибка: не задан OPENAI_API_KEY в переменных окружения Railway."
+        return (
+            "Не удалось сгенерировать пост: не задан API-ключ.\n"
+            "Нужно указать переменную окружения OPENAI_API_KEY в Railway."
+        )
 
     client = OpenAI(api_key=api_key)
 
@@ -154,7 +157,17 @@ async def generate_post_with_writer(
         content = response.choices[0].message.content or ""
         return content.strip()
     except Exception as e:
-        return f"Ошибка при генерации поста: {e}"
+        text = str(e)
+        if "insufficient_quota" in text or "You exceeded your current quota" in text:
+            return (
+                "Не удалось сгенерировать пост: закончился лимит API OpenAI.\n\n"
+                "Нужно пополнить баланс в кабинете OpenAI Platform и "
+                "после этого попробовать ещё раз."
+            )
+        return (
+            "Не удалось сгенерировать пост из-за технической ошибки.\n"
+            "Попробуй ещё раз чуть позже."
+        )
 
 
 # ----- /start -----
