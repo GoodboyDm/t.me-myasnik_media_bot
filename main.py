@@ -16,7 +16,7 @@ from openai import OpenAI
 
 # --- МОДЕЛЬ ---
 
-MODEL_NAME = "gpt-5-mini"  # при необходимости меняем здесь
+MODEL_NAME = "gpt-5-mini"  # как ты и хотел
 
 
 # --- ДОСТУП К БОТУ ---
@@ -54,6 +54,9 @@ user_release_type: dict[int, str | None] = {}
 user_photo: dict[int, list[str]] = {}  # список file_id фотографий
 
 dp = Dispatcher()
+
+# Глобальный клиент OpenAI
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 # --- КЛАВИАТУРЫ ---
@@ -138,7 +141,6 @@ async def log_post_event(
 ):
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        # База не настроена — молча пропускаем логирование
         return
 
     def _insert():
@@ -178,7 +180,7 @@ async def log_post_event(
     await asyncio.to_thread(_insert)
 
 
-# --- ВЫЗОВ OPENAI (RESPONSES API + gpt-5-mini) ---
+# --- ВЫЗОВ OpenAI ЧЕРЕЗ RESPONSES + gpt-5-mini ---
 
 
 async def generate_post_with_writer(
@@ -189,8 +191,8 @@ async def generate_post_with_writer(
     photos_count: int,
 ) -> str:
     """
-    Вызывает OpenAI (gpt-5-mini) с промптом Константина.
-    Используем Responses API и свойство response.output_text.
+    Генерируем пост через Responses API и модель gpt-5-mini.
+    Без temperature, с разбором response.output[..].content[..].text.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -199,8 +201,6 @@ async def generate_post_with_writer(
             "Не удалось сгенерировать пост: не задан API-ключ OpenAI.\n"
             "Проверь переменную окружения OPENAI_API_KEY в Railway."
         )
-
-    client = OpenAI(api_key=api_key)
 
     infopovod_str = infopovod or "нет"
     topic_str = topic or "нет"
@@ -221,27 +221,39 @@ async def generate_post_with_writer(
     try:
         loop = asyncio.get_running_loop()
 
-        # gpt-5-mini через Responses API: model + instructions + input
         response = await loop.run_in_executor(
             None,
-            lambda: client.responses.create(
+            lambda: openai_client.responses.create(
                 model=MODEL_NAME,
                 instructions=WRITER_SYSTEM_PROMPT,
                 input=user_prompt,
                 max_output_tokens=400,
+                # temperature НЕ задаём — gpt-5-mini его не поддерживает
             ),
         )
 
-        # В официальных примерах есть удобное свойство output_text
-        text = getattr(response, "output_text", None)
-        if not text or not str(text).strip():
-            print("DEBUG OpenAI raw response:", response)
+        # Разбираем текст из response.output
+        text_parts: list[str] = []
+        for out_item in response.output or []:
+            if getattr(out_item, "type", None) == "message":
+                for c in getattr(out_item, "content", []) or []:
+                    if getattr(c, "type", None) == "output_text":
+                        # В JSON это поле называется "text"
+                        t = getattr(c, "text", None)
+                        if t:
+                            text_parts.append(t)
+
+        full_text = "\n".join(text_parts).strip()
+
+        if not full_text:
+            # На всякий случай лог в консоль, чтобы видеть «сырое» тело
+            print("DEBUG: empty output from responses.create:", response)
             return (
                 "Не удалось сгенерировать пост: модель вернула пустой текст.\n"
                 "Попробуй ещё раз, а я перепроверю формат."
             )
 
-        return str(text).strip()
+        return full_text
 
     except Exception as e:
         err = str(e)
@@ -506,7 +518,6 @@ async def handle_any_message(message: Message):
 
             await message.answer(post_output, reply_markup=ReplyKeyboardRemove())
 
-            # логируем, но не ломаем бота при ошибке логирования
             try:
                 await log_post_event(
                     tg_user_id=user_id,
@@ -522,7 +533,6 @@ async def handle_any_message(message: Message):
             except Exception:
                 pass
 
-            # чистим данные
             for d in (
                 user_infopovod,
                 user_topic,
@@ -534,7 +544,6 @@ async def handle_any_message(message: Message):
 
             return
 
-        # Любой другой текст на этом шаге — подсказка
         await message.answer(
             "Если хотите добавить фото — отправьте его (не более 3 штук).\n"
             "Когда будете готовы — нажмите «Создать пост».",
@@ -542,7 +551,7 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # Если сообщение не попало ни в одно состояние — просто игнорируем или даём мягкий ответ
+    # Если сообщение не попало ни в одно состояние
     await message.answer(
         "Чтобы начать, отправь команду /start.",
         reply_markup=ReplyKeyboardRemove(),
