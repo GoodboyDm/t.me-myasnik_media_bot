@@ -1,5 +1,7 @@
 import os
 import asyncio
+from pathlib import Path
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
@@ -8,6 +10,7 @@ from aiogram.types import (
     ReplyKeyboardRemove,
 )
 from aiogram.filters import CommandStart
+from openai import OpenAI
 
 # --- ДОСТУП К БОТУ ---
 
@@ -19,6 +22,15 @@ def is_allowed(message: Message) -> bool:
     return username in ALLOWED_USERNAMES
 
 
+# --- ЗАГРУЗКА ПРОМПТА ИЗ ФАЙЛА ---
+
+PROMPT_PATH = Path(__file__).parent / "myasnik_prompt.txt"
+try:
+    WRITER_SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8")
+except FileNotFoundError:
+    WRITER_SYSTEM_PROMPT = "ERROR: myasnik_prompt.txt not found"
+
+
 # --- СОСТОЯНИЯ ---
 
 waiting_infopovod = set()
@@ -28,14 +40,16 @@ waiting_release_type = set()
 waiting_photo_or_create = set()
 
 # Данные по пользователю
-user_infopovod = {}
-user_topic = {}
-user_link = {}
-user_release_type = {}
-user_photo = {}  # user_id -> list[file_id]
+user_infopovod: dict[int, str | None] = {}
+user_topic: dict[int, str | None] = {}
+user_link: dict[int, str | None] = {}
+user_release_type: dict[int, str | None] = {}
+user_photo: dict[int, list[str]] = {}  # user_id -> list[file_id]
 
 dp = Dispatcher()
 
+
+# --- КЛАВИАТУРЫ ---
 
 def infopovod_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -95,6 +109,52 @@ async def go_to_photo_step(user_id: int, message: Message):
         "Если фото не нужно — просто нажмите «Создать пост»."
     )
     await message.answer(text, reply_markup=create_post_keyboard())
+
+
+# --- ВЫЗОВ ПИСАТЕЛЯ ---
+
+
+async def generate_post_with_writer(
+    infopovod: str | None,
+    topic: str | None,
+    link: str | None,
+    release_type: str | None,
+    photos_count: int,
+) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return "Ошибка: не задан OPENAI_API_KEY в переменных окружения Railway."
+
+    client = OpenAI(api_key=api_key)
+
+    photo_flag = "есть" if photos_count > 0 else "нет"
+
+    user_prompt = f"""
+Входные параметры для генерации поста:
+
+ИНФОПОВОД: {infopovod or 'нет'}
+ССЫЛКА: {link or 'нет'}
+ТИП РЕЛИЗА: {release_type or 'нет'}
+ТЕМА: {topic or 'нет'}
+ФОТО: {photo_flag}
+
+Сгенерируй пост строго по инструкциям из SYSTEM, соблюдай формат OUTPUT FORMAT.
+"""
+
+    try:
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": WRITER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.6,
+        )
+        content = response.choices[0].message.content or ""
+        return content.strip()
+    except Exception as e:
+        return f"Ошибка при генерации поста: {e}"
 
 
 # ----- /start -----
@@ -167,7 +227,6 @@ async def handle_photo(message: Message):
         )
         return
 
-    # Добавляем новое фото
     file_id = message.photo[-1].file_id
     photos.append(file_id)
 
@@ -334,20 +393,19 @@ async def handle_any_message(message: Message):
             link = user_link.get(user_id)
             rtype = user_release_type.get(user_id)
             photos = user_photo.get(user_id) or []
-            photo_info = f"есть ({len(photos)} шт.)" if photos else "нет"
+            photos_count = len(photos)
 
-            # Пока заглушка: здесь потом вызовем агента-писателя
-            text = (
-                "Данные для генерации поста собраны.\n\n"
-                f"Инфоповод: {infopovod or 'нет'}\n"
-                f"Тема: {topic or 'нет'}\n"
-                f"Ссылка: {link or 'нет'}\n"
-                f"Тип релиза: {rtype or 'нет'}\n"
-                f"Фото: {photo_info}.\n\n"
-                "На этом шаге дальше будет вызываться агент-писатель Константина."
+            post_output = await generate_post_with_writer(
+                infopovod=infopovod,
+                topic=topic,
+                link=link,
+                release_type=rtype,
+                photos_count=photos_count,
             )
-            await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
+            await message.answer(post_output, reply_markup=ReplyKeyboardRemove())
+
+            # Чистим данные
             for d in (
                 user_infopovod,
                 user_topic,
@@ -366,7 +424,7 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # Вне сценария
+    # Вне сценария — ничего не делаем
     return
 
 
