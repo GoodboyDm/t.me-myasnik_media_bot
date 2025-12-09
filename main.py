@@ -146,29 +146,35 @@ async def handle_photo(message: Message):
     if user_id not in waiting_photo_or_create:
         return
 
+    # Берём список фоток пользователя, если нет — создаём
     photos = user_photo.get(user_id)
     if photos is None:
         photos = []
         user_photo[user_id] = photos
 
-    if len(photos) >= 3:
+    # Добавляем новое фото
+    file_id = message.photo[-1].file_id
+    photos.append(file_id)
+
+    # Жёсткий лимит: не более 3
+    if len(photos) > 3:
+        # Откатываем лишнее фото
+        photos.pop()
+
         await message.answer(
             "Можно прикрепить не более 3 фотографий.\n"
-            "Если нужно заменить — начнём новый пост командой /start.",
+            "Лишние кадры я не сохраняю.\n"
+            "Когда будете готовы — нажмите «Создать пост».",
             reply_markup=create_post_keyboard(),
         )
         return
 
-    file_id = message.photo[-1].file_id
-    photos.append(file_id)
-
-    text = (
+    await message.answer(
         f"Фото {len(photos)}/3 принято.\n"
         "Если хотите добавить ещё — отправьте новое фото.\n"
-        "Когда будете готовы — нажмите «Создать пост»."
+        "Когда будете готовы — нажмите «Создать пост».",
+        reply_markup=create_post_keyboard(),
     )
-    await message.answer(text, reply_markup=create_post_keyboard())
-
 
 # ----- ТЕКСТОВЫЕ СООБЩЕНИЯ -----
 
