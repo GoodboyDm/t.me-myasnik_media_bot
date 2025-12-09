@@ -177,61 +177,81 @@ async def log_post_event(
 # --- ВЫЗОВ ПИСАТЕЛЯ ---
 
 
-async def generate_post_with_writer(
-    infopovod: str | None,
-    topic: str | None,
-    link: str | None,
-    release_type: str | None,
-    photos_count: int,
-) -> str:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return (
-            "Не удалось сгенерировать пост: не задан API-ключ.\n"
-            "Нужно указать переменную окружения OPENAI_API_KEY в Railway."
-        )
-
-    client = OpenAI(api_key=api_key)
-
-    photo_flag = "есть" if photos_count > 0 else "нет"
-
-    user_prompt = f"""
-Входные параметры для генерации поста:
-
-ИНФОПОВОД: {infopovod or 'нет'}
-ССЫЛКА: {link or 'нет'}
-ТИП РЕЛИЗА: {release_type or 'нет'}
-ТЕМА: {topic or 'нет'}
-ФОТО: {photo_flag}
-
-Сгенерируй пост строго по инструкциям из SYSTEM, соблюдай формат OUTPUT FORMAT.
-"""
+async def generate_post_with_writer(params: dict) -> str:
+    """
+    Вызывает OpenAI с промптом автора Константина.
+    params – словарь с полями:
+      infopovod, topic, link, release_type, photos_count
+    """
 
     try:
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": WRITER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.6,
-        )
-        content = response.choices[0].message.content or ""
-        return content.strip()
-    except Exception as e:
-        text = str(e)
-        if "insufficient_quota" in text or "You exceeded your current quota" in text:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
             return (
-                "Не удалось сгенерировать пост: закончился лимит API OpenAI.\n\n"
-                "Нужно пополнить баланс в кабинете OpenAI Platform и "
-                "после этого попробовать ещё раз."
+                "Не удалось сгенерировать пост: не задан API-ключ OpenAI. "
+                "Проверь переменную окружения OPENAI_API_KEY в Railway."
             )
-        return (
-            "Не удалось сгенерировать пост из-за технической ошибки.\n"
-            "Попробуй ещё раз чуть позже."
+
+        client = OpenAI(api_key=api_key)
+
+        # Собираем пользовательский промпт (как и раньше)
+        infopovod = params.get("infopovod") or "нет"
+        topic = params.get("topic") or "нет"
+        link = params.get("link") or "нет"
+        release_type = params.get("release_type") or "нет"
+        photos_count = params.get("photos_count") or 0
+
+        # Короткое текстовое описание того, что бот получил
+        user_prompt = (
+            f"Инфоповод: {infopovod}\n"
+            f"Тема: {topic}\n"
+            f"Ссылка: {link}\n"
+            f"Тип релиза: {release_type}\n"
+            f"Фото: {photos_count}\n\n"
+            "Сгенерируй пост строго по правилам из инструкции."
         )
 
+        # ВАЖНО: используем Responses API, а не chat.completions
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.responses.create(
+                model=MODEL_NAME,              # "gpt-5-mini"
+                instructions=WRITER_SYSTEM_PROMPT,  # наш системный промпт из файла
+                input=user_prompt,             # текст с параметрами
+                temperature=0.6,
+                max_output_tokens=400,
+            ),
+        )
+
+        # Достаём текст из объекта Response
+        output_items = response.output
+        if not output_items:
+            return "Не удалось сгенерировать пост: модель вернула пустой ответ."
+
+        message_item = output_items[0]
+        content = message_item.content
+        if not content:
+            return "Не удалось сгенерировать пост: пустой контент в ответе модели."
+
+        text_part = content[0]
+        result_text = getattr(text_part, "text", None)
+        if not result_text:
+            return "Не удалось сгенерировать пост: не нашёл текст в ответе модели."
+
+        return result_text.strip()
+
+    except Exception as e:
+        err = str(e)
+        # Лог в Railway-логи, но не показываем пользователю внутренности
+        print(f"[OpenAI error] {err}")
+
+        # Отдельно ловим историю с квотой
+        if "insufficient_quota" in err or "You exceeded your current quota" in err:
+            return (
+                "Ошибка при генерации поста: закончился лимит на стороне OpenAI. "
+                "Попробуй пополнить баланс в панели OpenAI и повторить запрос."
+            )
 
 # ----- /start -----
 
