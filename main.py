@@ -1,7 +1,12 @@
 import os
 import asyncio
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+)
 from aiogram.filters import CommandStart
 
 # Простые "состояния" по пользователям
@@ -10,6 +15,12 @@ waiting_topic_choice = set()
 waiting_topic_custom = set()
 
 dp = Dispatcher()
+
+
+def infopovod_keyboard() -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("Без инфоповода"))
+    return kb
 
 
 def topic_keyboard() -> ReplyKeyboardMarkup:
@@ -37,9 +48,9 @@ async def cmd_start(message: Message):
         "Привет! Давай сделаем новый пост для Константина.\n\n"
         "Введите инфоповод.\n"
         "Что произошло? Где? С кем?\n"
-        "Если инфоповода нет — напишите «нет»."
+        "Если инфоповода нет — нажмите кнопку «Без инфоповода»."
     )
-    await message.answer(text, reply_markup=ReplyKeyboardRemove())
+    await message.answer(text, reply_markup=infopovod_keyboard())
 
 
 @dp.message()
@@ -50,8 +61,8 @@ async def handle_any_message(message: Message):
 
     # 1) Шаг инфоповода
     if user_id in waiting_infopovod:
-        if low == "нет" or raw == "":
-            # Инфоповода нет -> выбор темы
+        # Ветвь "без инфоповода" — через кнопку или слово "нет"
+        if raw == "Без инфоповода" or low == "нет" or raw == "":
             waiting_infopovod.discard(user_id)
             waiting_topic_choice.add(user_id)
 
@@ -61,7 +72,7 @@ async def handle_any_message(message: Message):
             )
             await message.answer(text, reply_markup=topic_keyboard())
         else:
-            # Инфоповод есть -> просто подтверждаем (пока без генерации)
+            # Есть осмысленный инфоповод
             waiting_infopovod.discard(user_id)
 
             resp = (
@@ -119,7 +130,7 @@ async def handle_any_message(message: Message):
         await message.answer(resp, reply_markup=ReplyKeyboardRemove())
         return
 
-    # Вне сценария пока молчим
+    # Вне сценария — пока молчим
     return
 
 
