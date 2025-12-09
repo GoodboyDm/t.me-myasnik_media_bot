@@ -16,7 +16,8 @@ from openai import OpenAI
 
 # --- МОДЕЛЬ ---
 
-MODEL_NAME = "gpt-5-mini"  # здесь меняем модель при необходимости
+MODEL_NAME = "gpt-5-mini"  # при необходимости меняем здесь
+
 
 # --- ДОСТУП К БОТУ ---
 
@@ -37,7 +38,7 @@ except FileNotFoundError:
     WRITER_SYSTEM_PROMPT = "ERROR: myasnik_prompt.txt not found"
 
 
-# --- СОСТОЯНИЯ ---
+# --- ПРОСТЕЙШЕЕ СОСТОЯНИЕ НА МНОЖЕСТВАХ ---
 
 waiting_infopovod = set()
 waiting_topic_choice = set()
@@ -45,17 +46,18 @@ waiting_topic_custom = set()
 waiting_release_type = set()
 waiting_photo_or_create = set()
 
-# Данные по пользователю
+# Данные по пользователю (user_id -> ...)
 user_infopovod: dict[int, str | None] = {}
 user_topic: dict[int, str | None] = {}
 user_link: dict[int, str | None] = {}
 user_release_type: dict[int, str | None] = {}
-user_photo: dict[int, list[str]] = {}  # user_id -> list[file_id]
+user_photo: dict[int, list[str]] = {}  # список file_id фотографий
 
 dp = Dispatcher()
 
 
 # --- КЛАВИАТУРЫ ---
+
 
 def infopovod_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -98,6 +100,9 @@ def create_post_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+
 def extract_link(text: str) -> str | None:
     for part in text.split():
         if part.startswith("http://") or part.startswith("https://"):
@@ -133,7 +138,7 @@ async def log_post_event(
 ):
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        # Если база не настроена — просто не логируем, но бот работает
+        # База не настроена — молча пропускаем логирование
         return
 
     def _insert():
@@ -170,11 +175,10 @@ async def log_post_event(
                 )
                 conn.commit()
 
-    # Чтобы не блокировать бота, выполняем запись в отдельном потоке
     await asyncio.to_thread(_insert)
 
 
-# --- ВЫЗОВ ПИСАТЕЛЯ ---
+# --- ВЫЗОВ OPENAI (RESPONSES API + gpt-5-mini) ---
 
 
 async def generate_post_with_writer(
@@ -185,8 +189,8 @@ async def generate_post_with_writer(
     photos_count: int,
 ) -> str:
     """
-    Вызывает OpenAI (gpt-5-mini) с промптом автора Константина.
-    Сигнатура совместима с существующим кодом.
+    Вызывает OpenAI (gpt-5-mini) с промптом Константина.
+    Используем Responses API и свойство response.output_text.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -217,32 +221,27 @@ async def generate_post_with_writer(
     try:
         loop = asyncio.get_running_loop()
 
-        # ВАЖНО: без temperature, только model + instructions + input
+        # gpt-5-mini через Responses API: model + instructions + input
         response = await loop.run_in_executor(
             None,
             lambda: client.responses.create(
-                model=MODEL_NAME,                # "gpt-5-mini"
+                model=MODEL_NAME,
                 instructions=WRITER_SYSTEM_PROMPT,
                 input=user_prompt,
                 max_output_tokens=400,
             ),
         )
 
-        if not response.output:
-            return "Не удалось сгенерировать пост: пустой ответ модели."
+        # В официальных примерах есть удобное свойство output_text
+        text = getattr(response, "output_text", None)
+        if not text or not str(text).strip():
+            print("DEBUG OpenAI raw response:", response)
+            return (
+                "Не удалось сгенерировать пост: модель вернула пустой текст.\n"
+                "Попробуй ещё раз, а я перепроверю формат."
+            )
 
-        msg = response.output[0]
-        if not msg.content:
-            return "Не удалось сгенерировать пост: нет контента в ответе модели."
-
-        part = msg.content[0]
-        text_obj = getattr(part, "text", None)
-        if not text_obj:
-            return "Не удалось сгенерировать пост: не найден текст в ответе модели."
-
-        # В SDK text_obj обычно объект с полем value
-        text_value = getattr(text_obj, "value", None) or str(text_obj)
-        return text_value.strip()
+        return str(text).strip()
 
     except Exception as e:
         err = str(e)
@@ -258,7 +257,9 @@ async def generate_post_with_writer(
             "Не удалось сгенерировать пост из-за технической ошибки.\n"
             "Попробуй ещё раз чуть позже."
         )
-# ----- /start -----
+
+
+# --- /start ---
 
 
 @dp.message(CommandStart())
@@ -269,7 +270,7 @@ async def cmd_start(message: Message):
 
     user_id = message.from_user.id
 
-    # Сбрасываем состояния и данные
+    # Сброс всех состояний и данных
     for s in (
         waiting_infopovod,
         waiting_topic_choice,
@@ -299,7 +300,7 @@ async def cmd_start(message: Message):
     await message.answer(text, reply_markup=infopovod_keyboard())
 
 
-# ----- ФОТО -----
+# --- ОБРАБОТКА ФОТО ---
 
 
 @dp.message(F.photo)
@@ -346,7 +347,7 @@ async def handle_photo(message: Message):
         )
 
 
-# ----- ТЕКСТ -----
+# --- ОБЩИЙ ХЭНДЛЕР ТЕКСТА ---
 
 
 @dp.message()
@@ -375,6 +376,7 @@ async def handle_any_message(message: Message):
 
         link = extract_link(raw)
         if link:
+            # убираем ссылку из текста инфоповода
             parts = [
                 p for p in raw.split()
                 if not (p.startswith("http://") or p.startswith("https://"))
@@ -504,6 +506,7 @@ async def handle_any_message(message: Message):
 
             await message.answer(post_output, reply_markup=ReplyKeyboardRemove())
 
+            # логируем, но не ломаем бота при ошибке логирования
             try:
                 await log_post_event(
                     tg_user_id=user_id,
@@ -519,6 +522,7 @@ async def handle_any_message(message: Message):
             except Exception:
                 pass
 
+            # чистим данные
             for d in (
                 user_infopovod,
                 user_topic,
@@ -530,6 +534,7 @@ async def handle_any_message(message: Message):
 
             return
 
+        # Любой другой текст на этом шаге — подсказка
         await message.answer(
             "Если хотите добавить фото — отправьте его (не более 3 штук).\n"
             "Когда будете готовы — нажмите «Создать пост».",
@@ -537,7 +542,14 @@ async def handle_any_message(message: Message):
         )
         return
 
-    return
+    # Если сообщение не попало ни в одно состояние — просто игнорируем или даём мягкий ответ
+    await message.answer(
+        "Чтобы начать, отправь команду /start.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+# --- ТОЧКА ВХОДА ---
 
 
 async def main():
