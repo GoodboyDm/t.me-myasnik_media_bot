@@ -1,7 +1,9 @@
 import os
 import asyncio
 from pathlib import Path
+from datetime import datetime, timezone
 
+import psycopg
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
@@ -11,6 +13,10 @@ from aiogram.types import (
 )
 from aiogram.filters import CommandStart
 from openai import OpenAI
+
+# --- МОДЕЛЬ ---
+
+MODEL_NAME = "gpt-5-mini"  # здесь меняем модель при необходимости
 
 # --- ДОСТУП К БОТУ ---
 
@@ -111,6 +117,63 @@ async def go_to_photo_step(user_id: int, message: Message):
     await message.answer(text, reply_markup=create_post_keyboard())
 
 
+# --- ЛОГИРОВАНИЕ В БД ---
+
+
+async def log_post_event(
+    tg_user_id: int,
+    tg_username: str | None,
+    infopovod: str | None,
+    topic: str | None,
+    link: str | None,
+    release_type: str | None,
+    photos_count: int,
+    model: str,
+    raw_output: str,
+):
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        # Если база не настроена — просто не логируем, но бот работает
+        return
+
+    def _insert():
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO myasnik_posts (
+                        created_at,
+                        tg_user_id,
+                        tg_username,
+                        infopovod,
+                        topic,
+                        link,
+                        release_type,
+                        photos_count,
+                        model,
+                        raw_output
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        datetime.now(timezone.utc),
+                        tg_user_id,
+                        tg_username,
+                        infopovod,
+                        topic,
+                        link,
+                        release_type,
+                        photos_count,
+                        model,
+                        raw_output,
+                    ),
+                )
+                conn.commit()
+
+    # Чтобы не блокировать бота, выполняем запись в отдельном потоке
+    await asyncio.to_thread(_insert)
+
+
 # --- ВЫЗОВ ПИСАТЕЛЯ ---
 
 
@@ -147,7 +210,7 @@ async def generate_post_with_writer(
     try:
         response = await asyncio.to_thread(
             client.chat.completions.create,
-            model="gpt-5-mini",
+            model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": WRITER_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -230,7 +293,6 @@ async def handle_photo(message: Message):
         photos = []
         user_photo[user_id] = photos
 
-    # Уже есть 3 фото → новое не сохраняем
     if len(photos) >= 3:
         await message.answer(
             "Можно прикрепить не более 3 фотографий.\n"
@@ -288,7 +350,6 @@ async def handle_any_message(message: Message):
 
         link = extract_link(raw)
         if link:
-            # убираем ссылку из текста инфоповода
             parts = [
                 p for p in raw.split()
                 if not (p.startswith("http://") or p.startswith("https://"))
@@ -418,7 +479,21 @@ async def handle_any_message(message: Message):
 
             await message.answer(post_output, reply_markup=ReplyKeyboardRemove())
 
-            # Чистим данные
+            try:
+                await log_post_event(
+                    tg_user_id=user_id,
+                    tg_username=message.from_user.username,
+                    infopovod=infopovod,
+                    topic=topic,
+                    link=link,
+                    release_type=rtype,
+                    photos_count=photos_count,
+                    model=MODEL_NAME,
+                    raw_output=post_output,
+                )
+            except Exception:
+                pass
+
             for d in (
                 user_infopovod,
                 user_topic,
@@ -437,7 +512,6 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # Вне сценария — ничего не делаем
     return
 
 
