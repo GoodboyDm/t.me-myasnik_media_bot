@@ -9,7 +9,18 @@ from aiogram.types import (
 )
 from aiogram.filters import CommandStart
 
-# Состояния по пользователям
+# --- ДОСТУП К БОТУ ---
+
+ALLOWED_USERNAMES = {"dkokhel", "kochelme"}  # только ты
+
+
+def is_allowed(message: Message) -> bool:
+    username = (message.from_user.username or "").lower()
+    return username in ALLOWED_USERNAMES
+
+
+# --- СОСТОЯНИЯ ---
+
 waiting_infopovod = set()
 waiting_topic_choice = set()
 waiting_topic_custom = set()
@@ -21,7 +32,7 @@ user_infopovod = {}
 user_topic = {}
 user_link = {}
 user_release_type = {}
-user_photo = {}
+user_photo: dict[int, list[str]] = {}  # список file_id, максимум 3
 
 dp = Dispatcher()
 
@@ -76,17 +87,25 @@ def extract_link(text: str) -> str | None:
 
 async def go_to_photo_step(user_id: int, message: Message):
     waiting_photo_or_create.add(user_id)
-    user_photo.pop(user_id, None)
+    user_photo[user_id] = []
 
     text = (
         "Теперь можете отправить фото для поста.\n"
+        "Можно прикрепить не более 3 фотографий.\n"
         "Если фото не нужно — просто нажмите «Создать пост»."
     )
     await message.answer(text, reply_markup=create_post_keyboard())
 
 
+# ----- /start -----
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
+    if not is_allowed(message):
+        await message.answer("Доступ к этому боту ограничен.")
+        return
+
     user_id = message.from_user.id
 
     # Сбрасываем все состояния и данные
@@ -118,18 +137,34 @@ async def cmd_start(message: Message):
 
 @dp.message(F.photo)
 async def handle_photo(message: Message):
+    if not is_allowed(message):
+        await message.answer("Доступ к этому боту ограничен.")
+        return
+
     user_id = message.from_user.id
 
     if user_id not in waiting_photo_or_create:
         return
 
-    # Берём самое большое фото из массива
+    photos = user_photo.get(user_id)
+    if photos is None:
+        photos = []
+        user_photo[user_id] = photos
+
+    if len(photos) >= 3:
+        await message.answer(
+            "Можно прикрепить не более 3 фотографий.\n"
+            "Если нужно заменить — начнём новый пост командой /start.",
+            reply_markup=create_post_keyboard(),
+        )
+        return
+
     file_id = message.photo[-1].file_id
-    user_photo[user_id] = file_id
+    photos.append(file_id)
 
     text = (
-        "Фото принял.\n"
-        "Если хотите заменить — отправьте другое фото.\n"
+        f"Фото {len(photos)}/3 принято.\n"
+        "Если хотите добавить ещё — отправьте новое фото.\n"
         "Когда будете готовы — нажмите «Создать пост»."
     )
     await message.answer(text, reply_markup=create_post_keyboard())
@@ -140,6 +175,10 @@ async def handle_photo(message: Message):
 
 @dp.message()
 async def handle_any_message(message: Message):
+    if not is_allowed(message):
+        await message.answer("Доступ к этому боту ограничен.")
+        return
+
     user_id = message.from_user.id
     raw = (message.text or "").strip()
     low = raw.lower()
@@ -284,7 +323,8 @@ async def handle_any_message(message: Message):
             topic = user_topic.get(user_id)
             link = user_link.get(user_id)
             rtype = user_release_type.get(user_id)
-            photo_present = "есть" if user_photo.get(user_id) else "нет"
+            photos = user_photo.get(user_id) or []
+            photo_info = f"есть ({len(photos)} шт.)" if photos else "нет"
 
             # Здесь пока заглушка — позже вместо этого будет вызов агента-писателя
             text = (
@@ -293,12 +333,12 @@ async def handle_any_message(message: Message):
                 f"Тема: {topic or 'нет'}\n"
                 f"Ссылка: {link or 'нет'}\n"
                 f"Тип релиза: {rtype or 'нет'}\n"
-                f"Фото: {photo_present}.\n\n"
+                f"Фото: {photo_info}.\n\n"
                 "На этом шаге дальше будет вызываться агент-писатель Константина."
             )
             await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
-            # Чистим данные, чтобы следующий /start шёл с нуля
+            # Чистим данные
             user_infopovod.pop(user_id, None)
             user_topic.pop(user_id, None)
             user_link.pop(user_id, None)
@@ -307,9 +347,8 @@ async def handle_any_message(message: Message):
 
             return
 
-        # Любой текст, пока мы ждём фото/кнопку
         await message.answer(
-            "Если хотите добавить фото — отправьте его.\n"
+            "Если хотите добавить фото — отправьте его (не более 3 штук).\n"
             "Когда будете готовы — нажмите «Создать пост».",
             reply_markup=create_post_keyboard(),
         )
