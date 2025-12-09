@@ -16,7 +16,7 @@ from openai import OpenAI
 
 # --- МОДЕЛЬ ---
 
-MODEL_NAME = "gpt-5-mini"  # как ты и хотел
+MODEL_NAME = "gpt-5.1"
 
 
 # --- ДОСТУП К БОТУ ---
@@ -246,7 +246,7 @@ async def generate_post_with_writer(
 
         return text
 
-    except Exception as e:
+      except Exception as e:
         err = str(e)
         print(f"[OpenAI error] {err}")
 
@@ -260,7 +260,6 @@ async def generate_post_with_writer(
             "Не удалось сгенерировать пост из-за технической ошибки.\n"
             "Попробуй ещё раз чуть позже."
         )
-
 # --- /start ---
 
 
