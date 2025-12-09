@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 
-# Состояния по-простому: три множества юзеров
+# Простые "состояния" по пользователям
 waiting_infopovod = set()
 waiting_topic_choice = set()
 waiting_topic_custom = set()
@@ -26,7 +26,7 @@ def topic_keyboard() -> ReplyKeyboardMarkup:
 async def cmd_start(message: Message):
     user_id = message.from_user.id
 
-    # Сбрасываем все старые состояния
+    # Сбрасываем все состояния
     waiting_infopovod.discard(user_id)
     waiting_topic_choice.discard(user_id)
     waiting_topic_custom.discard(user_id)
@@ -51,7 +51,7 @@ async def handle_any_message(message: Message):
     # 1) Шаг инфоповода
     if user_id in waiting_infopovod:
         if low == "нет" or raw == "":
-            # Инфоповода нет -> переходим к выбору темы
+            # Инфоповода нет -> выбор темы
             waiting_infopovod.discard(user_id)
             waiting_topic_choice.add(user_id)
 
@@ -61,7 +61,7 @@ async def handle_any_message(message: Message):
             )
             await message.answer(text, reply_markup=topic_keyboard())
         else:
-            # Инфоповод есть -> пока просто подтверждаем
+            # Инфоповод есть -> просто подтверждаем (пока без генерации)
             waiting_infopovod.discard(user_id)
 
             resp = (
@@ -73,7 +73,7 @@ async def handle_any_message(message: Message):
 
         return
 
-    # 2) Шаг выбора темы из кнопок
+    # 2) Шаг выбора темы по кнопкам
     if user_id in waiting_topic_choice:
         if raw in [
             "Путь мужчины и сила",
@@ -86,7 +86,7 @@ async def handle_any_message(message: Message):
 
             resp = (
                 f"Принял тему: «{topic}».\n\n"
-                "Дальше сюда добавим шаг с фото и генерацией поста."
+                "Позже сюда добавим фото и генерацию поста."
             )
             await message.answer(resp, reply_markup=ReplyKeyboardRemove())
             return
@@ -101,7 +101,6 @@ async def handle_any_message(message: Message):
             )
             return
 
-        # Если что-то странное — просим воспользоваться кнопками
         await message.answer(
             "Пожалуйста, выберите тему на клавиатуре или нажмите «Ввести свою тему».",
             reply_markup=topic_keyboard(),
@@ -120,7 +119,7 @@ async def handle_any_message(message: Message):
         await message.answer(resp, reply_markup=ReplyKeyboardRemove())
         return
 
-    # Если пользователь вне сценария — пока молчим
+    # Вне сценария пока молчим
     return
 
 
