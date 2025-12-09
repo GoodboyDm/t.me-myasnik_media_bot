@@ -162,23 +162,36 @@ async def handle_any_message(message: Message):
 
         # Инфоповод есть
         link = extract_link(raw)
-        user_infopovod[user_id] = raw
 
         if link:
-            # Инфоповод + ссылка -> спрашиваем тип релиза
+            # Убираем ссылку из текста
+            parts = [
+                p for p in raw.split()
+                if not (p.startswith("http://") or p.startswith("https://"))
+            ]
+            text_without_link = " ".join(parts).strip()
+
+            if text_without_link:
+                infopovod_text = text_without_link
+            else:
+                infopovod_text = "Продвижение по ссылке"
+
+            user_infopovod[user_id] = infopovod_text
             user_link[user_id] = link
+
             waiting_infopovod.discard(user_id)
             waiting_release_type.add(user_id)
 
             text = (
                 "Принял инфоповод и увидел ссылку.\n\n"
-                f"Инфоповод:\n«{raw}»\n\n"
+                f"Инфоповод:\n«{infopovod_text}»\n\n"
                 f"Ссылка: {link}\n\n"
                 "Это премьера?"
             )
             await message.answer(text, reply_markup=release_type_keyboard())
         else:
             # Инфоповод без ссылки -> сразу к фото (Тема не нужна)
+            user_infopovod[user_id] = raw
             user_link[user_id] = None
             user_release_type[user_id] = None
             waiting_infopovod.discard(user_id)
