@@ -192,7 +192,7 @@ async def generate_post_with_writer(
 ) -> str:
     """
     Генерируем пост через Responses API и модель gpt-5-mini.
-    Без temperature, с разбором response.output[..].content[..].text.
+    Берём текст из response.output_text (официальное свойство SDK).
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -228,32 +228,23 @@ async def generate_post_with_writer(
                 instructions=WRITER_SYSTEM_PROMPT,
                 input=user_prompt,
                 max_output_tokens=400,
-                # temperature НЕ задаём — gpt-5-mini его не поддерживает
+                # ВАЖНО: temperature НЕ передаём — gpt-5-mini его не любит
             ),
         )
 
-        # Разбираем текст из response.output
-        text_parts: list[str] = []
-        for out_item in response.output or []:
-            if getattr(out_item, "type", None) == "message":
-                for c in getattr(out_item, "content", []) or []:
-                    if getattr(c, "type", None) == "output_text":
-                        # В JSON это поле называется "text"
-                        t = getattr(c, "text", None)
-                        if t:
-                            text_parts.append(t)
+        # Ключевой момент: используем output_text
+        text_obj = getattr(response, "output_text", None)
+        text = str(text_obj).strip() if text_obj is not None else ""
 
-        full_text = "\n".join(text_parts).strip()
-
-        if not full_text:
-            # На всякий случай лог в консоль, чтобы видеть «сырое» тело
-            print("DEBUG: empty output from responses.create:", response)
+        if not text:
+            # Логируем полный ответ, чтобы можно было посмотреть в логах Railway
+            print("DEBUG: empty output_text from responses.create:", response)
             return (
                 "Не удалось сгенерировать пост: модель вернула пустой текст.\n"
                 "Попробуй ещё раз, а я перепроверю формат."
             )
 
-        return full_text
+        return text
 
     except Exception as e:
         err = str(e)
@@ -269,7 +260,6 @@ async def generate_post_with_writer(
             "Не удалось сгенерировать пост из-за технической ошибки.\n"
             "Попробуй ещё раз чуть позже."
         )
-
 
 # --- /start ---
 
