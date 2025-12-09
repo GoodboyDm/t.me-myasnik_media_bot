@@ -191,15 +191,15 @@ async def generate_post_with_writer(
     photos_count: int,
 ) -> str:
     """
-    Генерируем пост через Responses API и модель gpt-5-mini.
-    Берём текст из response.output_text (официальное свойство SDK).
+    Генерирует пост с помощью OpenAI Responses API (модель gpt-5-mini).
+    Поддерживает системный промпт и формат ответа text.
     """
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return (
-            "Не удалось сгенерировать пост: не задан API-ключ OpenAI.\n"
-            "Проверь переменную окружения OPENAI_API_KEY в Railway."
+            "Не удалось сгенерировать пост: отсутствует API-ключ OpenAI.\n"
+            "Проверь переменную OPENAI_API_KEY в Railway."
         )
 
     infopovod_str = infopovod or "нет"
@@ -224,24 +224,24 @@ async def generate_post_with_writer(
         response = await loop.run_in_executor(
             None,
             lambda: openai_client.responses.create(
-                model=MODEL_NAME,
-                instructions=WRITER_SYSTEM_PROMPT,
-                input=user_prompt,
+                model=MODEL_NAME,  # gpt-5-mini
+                input=[
+                    {"role": "system", "content": WRITER_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "text"},
                 max_output_tokens=400,
-                # ВАЖНО: temperature НЕ передаём — gpt-5-mini его не любит
             ),
         )
 
-        # Ключевой момент: используем output_text
-        text_obj = getattr(response, "output_text", None)
-        text = str(text_obj).strip() if text_obj is not None else ""
+        # Пробуем аккуратно вытащить текст
+        text = getattr(response, "output_text", "").strip()
 
         if not text:
-            # Логируем полный ответ, чтобы можно было посмотреть в логах Railway
             print("DEBUG: empty output_text from responses.create:", response)
             return (
-                "Не удалось сгенерировать пост: модель вернула пустой текст.\n"
-                "Попробуй ещё раз, а я перепроверю формат."
+                "Не удалось сгенерировать пост: модель не вернула текст.\n"
+                "Попробуй ещё раз — я перепроверю формат."
             )
 
         return text
@@ -253,7 +253,7 @@ async def generate_post_with_writer(
         if "insufficient_quota" in err or "You exceeded your current quota" in err:
             return (
                 "Ошибка при генерации поста: закончился лимит OpenAI.\n"
-                "Попробуй пополнить баланс в кабинете OpenAI и повторить запрос."
+                "Пополните баланс и повторите попытку."
             )
 
         return (
