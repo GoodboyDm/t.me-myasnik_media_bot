@@ -11,7 +11,7 @@ from aiogram.filters import CommandStart
 
 # --- ДОСТУП К БОТУ ---
 
-ALLOWED_USERNAMES = {"dkokhel", "kochelme"}  # только ты
+ALLOWED_USERNAMES = {"dkokhel", "kochelme"}  # ты и сестра
 
 
 def is_allowed(message: Message) -> bool:
@@ -32,7 +32,7 @@ user_infopovod = {}
 user_topic = {}
 user_link = {}
 user_release_type = {}
-user_photo: dict[int, list[str]] = {}  # список file_id, максимум 3
+user_photo = {}  # user_id -> list[file_id]
 
 dp = Dispatcher()
 
@@ -108,18 +108,24 @@ async def cmd_start(message: Message):
 
     user_id = message.from_user.id
 
-    # Сбрасываем все состояния и данные
-    waiting_infopovod.discard(user_id)
-    waiting_topic_choice.discard(user_id)
-    waiting_topic_custom.discard(user_id)
-    waiting_release_type.discard(user_id)
-    waiting_photo_or_create.discard(user_id)
+    # Сбрасываем состояния и данные
+    for s in (
+        waiting_infopovod,
+        waiting_topic_choice,
+        waiting_topic_custom,
+        waiting_release_type,
+        waiting_photo_or_create,
+    ):
+        s.discard(user_id)
 
-    user_infopovod.pop(user_id, None)
-    user_topic.pop(user_id, None)
-    user_link.pop(user_id, None)
-    user_release_type.pop(user_id, None)
-    user_photo.pop(user_id, None)
+    for d in (
+        user_infopovod,
+        user_topic,
+        user_link,
+        user_release_type,
+        user_photo,
+    ):
+        d.pop(user_id, None)
 
     waiting_infopovod.add(user_id)
 
@@ -146,37 +152,42 @@ async def handle_photo(message: Message):
     if user_id not in waiting_photo_or_create:
         return
 
-    # Берём список фоток пользователя, если нет — создаём
     photos = user_photo.get(user_id)
     if photos is None:
         photos = []
         user_photo[user_id] = photos
 
-    # Добавляем новое фото
-    file_id = message.photo[-1].file_id
-    photos.append(file_id)
-
-    # Жёсткий лимит: не более 3
-    if len(photos) > 3:
-        # Откатываем лишнее фото
-        photos.pop()
-
+    # Уже есть 3 фото → новое не сохраняем
+    if len(photos) >= 3:
         await message.answer(
             "Можно прикрепить не более 3 фотографий.\n"
-            "Лишние кадры я не сохраняю.\n"
+            "Новое фото я не сохраняю.\n"
             "Когда будете готовы — нажмите «Создать пост».",
             reply_markup=create_post_keyboard(),
         )
         return
 
-    await message.answer(
-        f"Фото {len(photos)}/3 принято.\n"
-        "Если хотите добавить ещё — отправьте новое фото.\n"
-        "Когда будете готовы — нажмите «Создать пост».",
-        reply_markup=create_post_keyboard(),
-    )
+    # Добавляем новое фото
+    file_id = message.photo[-1].file_id
+    photos.append(file_id)
 
-# ----- ТЕКСТОВЫЕ СООБЩЕНИЯ -----
+    if len(photos) < 3:
+        await message.answer(
+            f"Фото {len(photos)}/3 принято.\n"
+            "Если хотите добавить ещё — отправьте новое фото.\n"
+            "Когда будете готовы — нажмите «Создать пост».",
+            reply_markup=create_post_keyboard(),
+        )
+    else:
+        await message.answer(
+            "Фото 3/3 принято.\n"
+            "Лимит достигнут, новые фото я не буду сохранять.\n"
+            "Можете сразу нажать «Создать пост».",
+            reply_markup=create_post_keyboard(),
+        )
+
+
+# ----- ТЕКСТ -----
 
 
 @dp.message()
@@ -192,10 +203,8 @@ async def handle_any_message(message: Message):
     # 1) Инфоповод
     if user_id in waiting_infopovod:
         if raw == "Без инфоповода" or low == "нет" or raw == "":
-            # Инфоповода нет -> идём в выбор темы
             waiting_infopovod.discard(user_id)
             waiting_topic_choice.add(user_id)
-
             user_infopovod[user_id] = None
 
             text = (
@@ -205,17 +214,14 @@ async def handle_any_message(message: Message):
             await message.answer(text, reply_markup=topic_keyboard())
             return
 
-        # Инфоповод есть
         link = extract_link(raw)
-
         if link:
-            # Убираем ссылку из текста
+            # убираем ссылку из текста инфоповода
             parts = [
                 p for p in raw.split()
                 if not (p.startswith("http://") or p.startswith("https://"))
             ]
             text_without_link = " ".join(parts).strip()
-
             if text_without_link:
                 infopovod_text = text_without_link
             else:
@@ -235,7 +241,6 @@ async def handle_any_message(message: Message):
             )
             await message.answer(text, reply_markup=release_type_keyboard())
         else:
-            # Инфоповод без ссылки -> сразу к фото (Тема не нужна)
             user_infopovod[user_id] = raw
             user_link[user_id] = None
             user_release_type[user_id] = None
@@ -247,7 +252,6 @@ async def handle_any_message(message: Message):
                 reply_markup=ReplyKeyboardRemove(),
             )
             await go_to_photo_step(user_id, message)
-
         return
 
     # 2) Тип релиза (если была ссылка)
@@ -307,7 +311,7 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # 4) Ручной ввод темы (ветка без инфоповода)
+    # 4) Ручной ввод темы
     if user_id in waiting_topic_custom:
         topic = raw
         waiting_topic_custom.discard(user_id)
@@ -332,7 +336,7 @@ async def handle_any_message(message: Message):
             photos = user_photo.get(user_id) or []
             photo_info = f"есть ({len(photos)} шт.)" if photos else "нет"
 
-            # Здесь пока заглушка — позже вместо этого будет вызов агента-писателя
+            # Пока заглушка: здесь потом вызовем агента-писателя
             text = (
                 "Данные для генерации поста собраны.\n\n"
                 f"Инфоповод: {infopovod or 'нет'}\n"
@@ -344,12 +348,14 @@ async def handle_any_message(message: Message):
             )
             await message.answer(text, reply_markup=ReplyKeyboardRemove())
 
-            # Чистим данные
-            user_infopovod.pop(user_id, None)
-            user_topic.pop(user_id, None)
-            user_link.pop(user_id, None)
-            user_release_type.pop(user_id, None)
-            user_photo.pop(user_id, None)
+            for d in (
+                user_infopovod,
+                user_topic,
+                user_link,
+                user_release_type,
+                user_photo,
+            ):
+                d.pop(user_id, None)
 
             return
 
@@ -360,7 +366,7 @@ async def handle_any_message(message: Message):
         )
         return
 
-    # Вне сценария — молчим
+    # Вне сценария
     return
 
 
