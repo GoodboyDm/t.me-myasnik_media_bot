@@ -232,7 +232,6 @@ async def generate_post_with_writer(
                     {"role": "system", "content": WRITER_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "text"},
                 max_output_tokens=400,
             ),
         )
